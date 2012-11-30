@@ -6,6 +6,7 @@ class DB_API {
 	public $db = null;
 	public $dbh = null;
 	public $query = array();
+	public $custom_sql = array();	
 	static $instance;
 	public $ttl = 3600;
 	public $cache = array();
@@ -51,6 +52,25 @@ class DB_API {
 		$this->dbs[$name] = (object) $args;
 
 	}
+	
+	/**
+	 * Register a custom sql query
+	 * @param string $name the query name
+	 * @param array $args the query parameters
+	 */
+	function register_custom_sql( $name = null, $args = array() ) {
+
+		$defaults = array(
+			'parameters' => array(),
+			'sql' => null,
+		);
+
+		$args = shortcode_atts( $defaults, $args );
+		$name = $this->slugify( $name );
+
+		$this->custom_sql[$name] = (object) $args;
+
+	}	
 
 	/**
 	 * Retrieves a database and its properties
@@ -152,6 +172,7 @@ class DB_API {
 			'limit' => null,
 			'format' => 'json',
 			'callback' =>  null,
+			'query' =>  null
 		);
 
 		$parts = shortcode_atts( $defaults, $parts );
@@ -159,23 +180,27 @@ class DB_API {
 		if ( $parts['db'] == null ) {
 			$this->error( 'Must select a database' );
 		}
+		
+		if (empty($parts['query'])) {
+			
+			if ( $parts['table'] == null) {
+				$this->error( 'Must select a table' );
+			}
 
-		if ( $parts['table'] == null ) {
-			$this->error( 'Must select a table' );
-		}
+			$db = $this->get_db( $parts['db'] );
 
-		$db = $this->get_db( $parts['db'] );
+			if ( in_array( $parts['table'], $db->table_blacklist ) ) {
+				$this->error( 'Invalid table' );
+			}
 
-		if ( in_array( $parts['table'], $db->table_blacklist ) ) {
-			$this->error( 'Invalid table' );
-		}
+			if ( !in_array( $parts['direction'], array( 'ASC', 'DESC' ) ) ) {
+				$parts['direction'] = null;
+			}
 
-		if ( !in_array( $parts['direction'], array( 'ASC', 'DESC' ) ) ) {
-			$parts['direction'] = null;
-		}
-
-		if ( !in_array( $parts['format'], array( 'html', 'xml', 'json' ) ) ) {
-			$parts['format'] = null;
+			if ( !in_array( $parts['format'], array( 'html', 'xml', 'json' ) ) ) {
+				$parts['format'] = null;
+			}
+			
 		}
 
 		return $parts;
@@ -347,7 +372,7 @@ class DB_API {
 			$dbh = &$this->connect( $db );
 
 			// sanitize table name
-			if ( !$this->verify_table( $query['table'] ) ) {
+			if ( !$this->verify_table( $query['table'] ) && empty($query['query'])) {
 				$this->error( 'Invalid Table' );
 			}
 
@@ -357,6 +382,25 @@ class DB_API {
 					$query['column'] = null;
 				}
 		  }
+
+		if(!empty($query['query']) && !empty($this->custom_sql[$query['query']])) {
+
+			$query_name = $query['query'];
+			parse_str( $_SERVER['QUERY_STRING'], $custom_vars );
+			
+			foreach ($this->custom_sql[$query_name]->parameters as $parameter) {
+				$search = '{[' . $parameter . ']}';
+				$replace = $custom_vars[$parameter];
+				$this->custom_sql[$query_name]->sql = str_replace($search, $replace, $this->custom_sql[$query_name]->sql);
+			}
+
+			$sql = $this->custom_sql[$query_name]->sql;
+
+			$sth = $dbh->prepare( $sql );
+			$sth->execute();
+
+		}		
+		else {
 
 		  $sql = 'SELECT * FROM ' . $query['table'];
 
@@ -385,6 +429,7 @@ class DB_API {
 			$sth = $dbh->prepare( $sql );
 			$sth->bindParam( ':value', $query['value'] );
 			$sth->execute();
+		}	
 
 			$results = $sth->fetchAll( PDO::FETCH_OBJ );
 			$results = $this->sanitize_results( $results );
